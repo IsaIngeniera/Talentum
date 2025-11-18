@@ -59,7 +59,7 @@ if (isset($_GET['accion']) && $_GET['accion'] == 'obtener' && isset($_GET['id'])
     exit();
 }
 
-// --- ACCIÓN: CREAR O ACTUALIZAR ---
+// --- ACCIÓN: CREAR O ACTUALIZAR (VERSIÓN CORREGIDA) ---
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $accion = $_POST['accion'];
     $nombre = $_POST['nombre'];
@@ -81,32 +81,61 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $conexion->begin_transaction();
     try {
         if ($accion == 'crear') {
-            // Insertar empleado
-            $sql_empleado = "INSERT INTO empleado (Nombre, Apellido, Genero, Fecha_Nacimiento, Tipo_Identificacion, Numero_Identificacion, Direccion_Residencia, EPS, idEmpleadoResponsable) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-            $stmt_empleado = $conexion->prepare($sql_empleado);
-            $stmt_empleado->bind_param("sssssissi", $nombre, $apellido, $genero, $fecha_nac, $tipo_id, $num_id, $direccion, $eps, $id_jefe);
-            $stmt_empleado->execute();
-            $idNuevoEmpleado = $conexion->insert_id;
             
-            // Insertar correo
-            $sql_correo = "INSERT INTO correoelectronico (Correo, idEmpleado) VALUES (?, ?)";
-            $stmt_correo = $conexion->prepare($sql_correo);
-            $stmt_correo->bind_param("si", $correo, $idNuevoEmpleado);
-            $stmt_correo->execute();
+            // 1. Preparamos la llamada al procedimiento
+            $sql_proc = "CALL registrar_empleado_web(?, ?, ?, ?, ?, ?, ?, ?, ?, @p_msg, @p_nuevo_id)";
+            $stmt_proc = $conexion->prepare($sql_proc);
             
-            // Insertar teléfono
-            $sql_telefono = "INSERT INTO telefono (numero, idEmpleado) VALUES (?, ?)";
-            $stmt_telefono = $conexion->prepare($sql_telefono);
-            $stmt_telefono->bind_param("ii", $telefono, $idNuevoEmpleado);
-            $stmt_telefono->execute();
+            // 2. Vinculamos los 9 parámetros de ENTRADA (IN)
+            $stmt_proc->bind_param("sssssissi", 
+                $nombre, $apellido, $genero, $fecha_nac, 
+                $tipo_id, $num_id, $direccion, $eps, $id_jefe
+            );
             
-            $conexion->commit();
-            $mensaje = "success|Empleado creado exitosamente.";
+            // 3. Ejecutamos el procedimiento
+            $stmt_proc->execute();
+            
+            // 4. ¡¡LA SOLUCIÓN CLAVE!! Cerramos el statement ANTES de leer la respuesta
+            // Esto libera la conexión para la siguiente consulta.
+            $stmt_proc->close();
+            
+            // 5. Ahora sí, leemos las variables de SALIDA (OUT)
+            $res_msg = $conexion->query("SELECT @p_msg AS msg, @p_nuevo_id AS id");
+            $out_vars = $res_msg->fetch_assoc();
+            
+            $mensaje_texto = $out_vars['msg'];
+            $idNuevoEmpleado = $out_vars['id'];
+            
+            // 6. Verificamos si la inserción fue exitosa
+            if ($idNuevoEmpleado !== NULL) {
+                // ÉXITO: El ID no es nulo, así que insertamos correo y teléfono
+                
+                // Insertar correo
+                $sql_correo = "INSERT INTO correoelectronico (Correo, idEmpleado) VALUES (?, ?)";
+                $stmt_correo = $conexion->prepare($sql_correo);
+                $stmt_correo->bind_param("si", $correo, $idNuevoEmpleado);
+                $stmt_correo->execute();
+                
+                // Insertar teléfono
+                $sql_telefono = "INSERT INTO telefono (numero, idEmpleado) VALUES (?, ?)";
+                $stmt_telefono = $conexion->prepare($sql_telefono);
+                $stmt_telefono->bind_param("ii", $telefono, $idNuevoEmpleado);
+                $stmt_telefono->execute();
+                
+                // Confirmamos la transacción completa
+                $conexion->commit();
+                $mensaje = "success|" . $mensaje_texto; // Ej: "success|Empleado insertado con éxito"
+                
+            } else {
+                // FALLO: El ID es nulo (el empleado ya existía)
+                $conexion->rollback(); // Revertimos (aunque no se insertó nada)
+                $mensaje = "danger|" . $mensaje_texto; // Ej: "danger|El empleado ya existe..."
+            }
+            
         } elseif ($accion == 'actualizar') {
+            // (Tu código de actualizar no cambia)
             $idEmpleado = $_POST['idEmpleado'];
             
-            // Actualizar empleado
             $sql = "UPDATE empleado SET Nombre = ?, Apellido = ?, Genero = ?, Fecha_Nacimiento = ?, 
                     Tipo_Identificacion = ?, Numero_Identificacion = ?, Direccion_Residencia = ?, EPS = ?, 
                     idEmpleadoResponsable = ? WHERE idEmpleado = ?";
@@ -114,13 +143,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             $stmt->bind_param("sssssissii", $nombre, $apellido, $genero, $fecha_nac, $tipo_id, $num_id, $direccion, $eps, $id_jefe, $idEmpleado);
             $stmt->execute();
             
-            // Actualizar correo
             $sql_correo = "UPDATE correoelectronico SET Correo = ? WHERE idEmpleado = ?";
             $stmt_correo = $conexion->prepare($sql_correo);
             $stmt_correo->bind_param("si", $correo, $idEmpleado);
             $stmt_correo->execute();
             
-            // Actualizar teléfono
             $sql_telefono = "UPDATE telefono SET numero = ? WHERE idEmpleado = ?";
             $stmt_telefono = $conexion->prepare($sql_telefono);
             $stmt_telefono->bind_param("ii", $telefono, $idEmpleado);
@@ -131,7 +158,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         }
     } catch (Exception $e) {
         $conexion->rollback();
-        $mensaje = "danger|Error: " . $e->getMessage();
+        // --- TAMBIÉN MEJORÉ EL MENSAJE DE ERROR INESPERADO ---
+        // Esto captura errores en la lógica de 'actualizar' (ej. duplicado al editar)
+        if ($e->getCode() == 1062) {
+             $mensaje = "danger|Error: Ya existe otro empleado con ese número de identificación.";
+        } else {
+             $mensaje = "danger|Error inesperado: " . $e->getMessage();
+        }
     }
     
     header("Location: empleado.php?msg=" . urlencode($mensaje));
@@ -141,12 +174,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 // --- LEER EMPLEADOS ---
 $lista_empleados = [];
 $sql_empleados = "SELECT e.*, 
-                  (SELECT Correo FROM correoelectronico WHERE idEmpleado = e.idEmpleado LIMIT 1) as correo,
-                  (SELECT numero FROM telefono WHERE idEmpleado = e.idEmpleado LIMIT 1) as telefono,
-                  jefe.Nombre as JefeNombre, jefe.Apellido as JefeApellido
-                  FROM empleado e
-                  LEFT JOIN empleado jefe ON e.idEmpleadoResponsable = jefe.idEmpleado
-                  ORDER BY e.Nombre";
+                    calcular_edad(e.Fecha_Nacimiento) AS edad,
+                    (SELECT Correo FROM correoelectronico WHERE idEmpleado = e.idEmpleado LIMIT 1) as correo,
+                    (SELECT numero FROM telefono WHERE idEmpleado = e.idEmpleado LIMIT 1) as telefono,
+                    jefe.Nombre as JefeNombre, jefe.Apellido as JefeApellido
+                    FROM empleado e
+                    LEFT JOIN empleado jefe ON e.idEmpleadoResponsable = jefe.idEmpleado
+                    ORDER BY e.Nombre";
 $resultado_empleados = $conexion->query($sql_empleados);
 if ($resultado_empleados && $resultado_empleados->num_rows > 0) {
     while($fila = $resultado_empleados->fetch_assoc()) {
@@ -166,15 +200,17 @@ if ($resultado_jefes && $resultado_jefes->num_rows > 0) {
 
 $conexion->close();
 ?>
-
+ 
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Empleados - Talentum</title>
+    <link rel="icon" href="images/Logo.jpg" type="image/jpg">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="https://cdn.datatables.net/2.0.8/css/dataTables.bootstrap5.css">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -226,12 +262,12 @@ $conexion->close();
         <div class="card shadow-sm">
             <div class="card-body">
                 <div class="table-responsive">
-                    <table class="table table-hover">
+                    <table  id="tablaEmpleados" class="table table-hover" style="width:100%">
                         <thead>
                             <tr>
                                 <th>ID</th>
                                 <th>Nombre Completo</th>
-                                <th>Identificación</th>
+                                <th>Edad</th> <th>Identificación</th>
                                 <th>Correo</th>
                                 <th>Teléfono</th>
                                 <th>EPS</th>
@@ -255,6 +291,7 @@ $conexion->close();
                                             <strong><?php echo $empleado['Nombre'] . ' ' . $empleado['Apellido']; ?></strong>
                                             <br><small class="text-muted"><?php echo $empleado['Genero']; ?></small>
                                         </td>
+                                        <td><?php echo $empleado['edad']; ?> años</td>
                                         <td>
                                             <?php echo $empleado['Tipo_Identificacion']; ?>
                                             <br><small class="text-muted"><?php echo $empleado['Numero_Identificacion']; ?></small>
@@ -311,7 +348,7 @@ $conexion->close();
                                 <input type="text" class="form-control" id="nombre" name="nombre" required>
                             </div>
                             <div class="col-md-6 mb-3">
-                                <label for="apellido" class="form-label">Apellido *</label>
+                                <label for="apellido" class="form-label">Apellidos *</label>
                                 <input type="text" class="form-control" id="apellido" name="apellido" required>
                             </div>
                         </div>
@@ -390,8 +427,17 @@ $conexion->close();
         </div>
     </div>
 
+    <script src="https://code.jquery.com/jquery-3.7.1.js"></script>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script src="https://cdn.datatables.net/2.0.8/js/dataTables.js"></script>
+    <script src="https://cdn.datatables.net/2.0.8/js/dataTables.bootstrap5.js"></script>
+
+
     <script>
+        
+        // Función para resetear el modal de "Crear"
         function resetForm() {
             document.getElementById('empleadoForm').reset();
             document.getElementById('accion').value = 'crear';
@@ -400,6 +446,7 @@ $conexion->close();
             document.getElementById('btnSubmit').textContent = 'Guardar Empleado';
         }
 
+        // Función para cargar datos en el modal de "Editar"
         function editarEmpleado(id) {
             fetch('empleado.php?accion=obtener&id=' + id)
                 .then(response => response.json())
@@ -421,10 +468,51 @@ $conexion->close();
                     document.getElementById('modalTitle').textContent = 'Editar Empleado';
                     document.getElementById('btnSubmit').textContent = 'Actualizar Empleado';
                     
+                    // Muestra el modal
                     new bootstrap.Modal(document.getElementById('empleadoModal')).show();
                 })
                 .catch(error => console.error('Error:', error));
         }
+
+        // SCRIPT 5: Activador de DataTables (Se ejecuta cuando la página está lista)
+        $(document).ready(function() {
+            // 1. Obtenemos la fecha de hoy (de la computadora del usuario)
+        const today = new Date();
+
+        // 2. Le damos el formato "AAAA-MM-DD" que entiende el input
+        const y = today.getFullYear();
+        const m = String(today.getMonth() + 1).padStart(2, '0'); // +1 porque los meses son 0-11
+        const d = String(today.getDate()).padStart(2, '0');
+        const todayString = `${y}-${m}-${d}`;
+        
+        // 3. Le decimos al input que su fecha MÁXIMA es hoy
+        document.getElementById('fecha_nacimiento').max = todayString;
+            $('#tablaEmpleados').DataTable({
+
+                "columnDefs": [
+                    { 
+                        "orderable": false, 
+                        "targets": [2, 3, 4, 5, 6, 7, 8] // Desactiva orden en estas columnas
+                    }
+                ],
+                
+                "order": [[ 0, "asc" ]], // Ordena por ID (columna 0) al cargar
+
+                language: {
+                    search: "Buscar:",
+                    lengthMenu: "Mostrar _MENU_ registros",
+                    info: "Mostrando _START_ a _END_ de _TOTAL_ registros",
+                    infoEmpty: "Mostrando 0 a 0 de 0 registros",
+                    infoFiltered: "(filtrado de _MAX_ registros totales)",
+                    paginate: {
+                        next: "Siguiente",
+                        previous: "Anterior"
+                    },
+                    zeroRecords: "No se encontraron registros coincidentes"
+                }
+            });
+        });
+
     </script>
 </body>
 </html>

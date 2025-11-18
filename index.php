@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Talentum - Sistema de Gestión de Empleados</title>
+    <link rel="icon" href="images/Logo.jpg" type="image/jpg">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
     <link rel="stylesheet" href="styles.css">
@@ -62,7 +63,7 @@
                     <img src="images/img0.jpg" class="d-block w-100" alt="Tecnología Avanzada">
                     <div class="carousel-caption">
                         <h1 class="display-3 fw-bold mb-4">EFICIENCIA TOTAL</h1>
-                        <p class="lead">Simplifica tus procesos de RRHH</p>
+                        <p class="lead">Simplifica tus procesos de GH</p>
                     </div>
                 </div>
             </div>
