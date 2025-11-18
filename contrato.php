@@ -71,7 +71,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             $mensaje = "success|Contrato actualizado exitosamente.";
         }
     } catch (Exception $e) {
-        $mensaje = "danger|Error: " . $e->getMessage();
+        // Captura el error específico del TRIGGER
+        if (strpos($e->getMessage(), 'El sueldo debe ser un valor positivo.') !== false) {
+            $mensaje = "danger|Error: El sueldo debe ser un valor positivo.";
+        } else {
+            // Muestra otros errores de SQL
+            $mensaje = "danger|Error: " . $e->getMessage();
+        }
     }
     
     header("Location: contrato.php?msg=" . urlencode($mensaje));
